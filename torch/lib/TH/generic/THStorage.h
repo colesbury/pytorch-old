@@ -61,6 +61,7 @@ TH_API THStorage* THStorage_(newWithDataAndAllocator)(
 TH_API void THStorage_(setFlag)(THStorage *storage, const char flag);
 TH_API void THStorage_(clearFlag)(THStorage *storage, const char flag);
 TH_API void THStorage_(retain)(THStorage *storage);
+TH_API void THStorage_(view)(THStorage *dst, THStorage *src, long offset, long size);
 TH_API void THStorage_(swap)(THStorage *storage1, THStorage *storage2);
 
 /* might differ with other API (like CUDA) */

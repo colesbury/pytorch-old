@@ -1,5 +1,6 @@
 #include "THAllocator.h"
 #include "THAtomic.h"
+#include <errno.h>
 
 /* stuff for mapped files */
 #ifdef _WIN32
@@ -39,6 +40,7 @@ struct THMapAllocatorContext_ {
   char *filename; /* file name */
   int flags;
   long size; /* mapped size */
+  int fd;
 };
 
 #define TH_ALLOC_ALIGNMENT 64
@@ -47,10 +49,11 @@ typedef struct {
   int refcount;
 } THMapInfo;
 
+char * unknown_filename = "unknown filename";
+
 THMapAllocatorContext *THMapAllocatorContext_new(const char *filename, int flags)
 {
   THMapAllocatorContext *ctx = THAlloc(sizeof(THMapAllocatorContext));
-
 
   if (!(flags & TH_ALLOCATOR_MAPPED_SHARED) && !(flags & TH_ALLOCATOR_MAPPED_SHAREDMEM))
     flags &= ~TH_ALLOCATOR_MAPPED_NOCREATE;
@@ -58,10 +61,23 @@ THMapAllocatorContext *THMapAllocatorContext_new(const char *filename, int flags
     THError("TH_ALLOCATOR_MAPPED_EXCLUSIVE flag requires opening the file "
         "in shared mode");
 
-  ctx->filename = THAlloc(strlen(filename)+1);
-  strcpy(ctx->filename, filename);
+  if (filename) {
+    ctx->filename = THAlloc(strlen(filename)+1);
+    strcpy(ctx->filename, filename);
+  } else {
+    ctx->filename = unknown_filename;
+  }
   ctx->flags = flags;
   ctx->size = 0;
+  ctx->fd = -1;
+
+  return ctx;
+}
+
+THMapAllocatorContext *THMapAllocatorContext_newWithFd(const char *filename, int fd, int flags)
+{
+  THMapAllocatorContext *ctx = THMapAllocatorContext_new(filename, flags);
+  ctx->fd = fd;
 
   return ctx;
 }
@@ -71,6 +87,11 @@ char * THMapAllocatorContext_filename(THMapAllocatorContext *ctx)
   return ctx->filename;
 }
 
+int THMapAllocatorContext_fd(THMapAllocatorContext *ctx)
+{
+  return ctx->fd;
+}
+
 long THMapAllocatorContext_size(THMapAllocatorContext *ctx)
 {
   return ctx->size;
@@ -78,7 +99,8 @@ long THMapAllocatorContext_size(THMapAllocatorContext *ctx)
 
 void THMapAllocatorContext_free(THMapAllocatorContext *ctx)
 {
-  THFree(ctx->filename);
+  if (ctx->filename != unknown_filename)
+    THFree(ctx->filename);
   THFree(ctx);
 }
 
@@ -98,6 +120,10 @@ static void *_map_alloc(void* ctx_, long size)
       THError("exclusive file mapping is not supported on Windows");
     if (ctx->flags & TH_ALLOCATOR_MAPPED_NOCREATE)
       THError("file mapping without creation is not supported on Windows");
+    if (ctx->flags & TH_ALLOCATOR_MAPPED_KEEPFD)
+      THError("TH_ALLOCATOR_MAPPED_KEEPFD not supported on Windows");
+    if (ctx->flags & TH_ALLOCATOR_MAPPED_FROMFD)
+      THError("TH_ALLOCATOR_MAPPED_FROMFD not supported on Windows");
 
     /* open file */
     /* FILE_FLAG_RANDOM_ACCESS ? */
@@ -191,9 +217,9 @@ static void *_map_alloc(void* ctx_, long size)
 #else /* _WIN32 */
   {
     /* open file */
+    struct stat file_stat;
     int fd;
     int flags;
-    long fdsz;
 
     if (ctx->flags)
       flags = O_RDWR | O_CREAT;
@@ -205,35 +231,40 @@ static void *_map_alloc(void* ctx_, long size)
     if (ctx->flags & TH_ALLOCATOR_MAPPED_NOCREATE)
       flags &= ~O_CREAT;
 
-    if(ctx->flags & TH_ALLOCATOR_MAPPED_SHARED)
-    {
-      if((fd = open(ctx->filename, flags, (mode_t)0600)) == -1)
-        THError("unable to open file <%s> in read-write mode", ctx->filename);
-    }
-    else if (ctx->flags & TH_ALLOCATOR_MAPPED_SHAREDMEM)
-    {
+    if (!(ctx->flags & TH_ALLOCATOR_MAPPED_FROMFD)) {
+      if(ctx->flags & TH_ALLOCATOR_MAPPED_SHARED)
+      {
+        if((fd = open(ctx->filename, flags, (mode_t)0600)) == -1)
+          THError("unable to open file <%s> in read-write mode", ctx->filename);
+      }
+      else if (ctx->flags & TH_ALLOCATOR_MAPPED_SHAREDMEM)
+      {
 #ifdef HAVE_SHM_OPEN
-      if((fd = shm_open(ctx->filename, flags, (mode_t)0600)) == -1)
-        THError("unable to open shared memory object <%s> in read-write mode", ctx->filename);
+        if((fd = shm_open(ctx->filename, flags, (mode_t)0600)) == -1)
+          THError("unable to open shared memory object <%s> in read-write mode", ctx->filename);
 #else
-      THError("unable to open file <%s> in sharedmem mode, shm_open unavailable on this platform");
+        THError("unable to open file <%s> in sharedmem mode, shm_open unavailable on this platform");
 #endif
-    }
-    else
-    {
-      if((fd = open(ctx->filename, O_RDONLY)) == -1)
-        THError("unable to open file <%s> in read-only mode", ctx->filename);
+      }
+      else
+      {
+        if((fd = open(ctx->filename, O_RDONLY)) == -1)
+          THError("unable to open file <%s> in read-only mode", ctx->filename);
+      }
+    } else {
+      fd = ctx->fd;
     }
 
-    if((fdsz = lseek(fd, 0, SEEK_END)) == -1)
+    if(fstat(fd, &file_stat) == -1)
     {
-      close(fd);
-      THError("unable to seek at end of file <%s>", ctx->filename);
+      if (!(ctx->flags & TH_ALLOCATOR_MAPPED_FROMFD))
+        close(fd);
+      THError("unable to stat the file <%s>", ctx->filename);
     }
 
     if(size > 0)
     {
-      if(size > fdsz)
+      if(size > file_stat.st_size)
       {
         if(ctx->flags)
         {
@@ -243,26 +274,29 @@ static void *_map_alloc(void* ctx_, long size)
             if(ftruncate(fd, size) == -1)
               THError("unable to resize shared memory file <%s> to the right size", ctx->filename);
           }
-          if((fdsz = lseek(fd, size-1, SEEK_SET)) == -1)
+          if(fstat(fd, &file_stat) == -1 || file_stat.st_size != size)
           {
-            close(fd);
+            if (!(ctx->flags & TH_ALLOCATOR_MAPPED_FROMFD))
+              close(fd);
             THError("unable to stretch file <%s> to the right size", ctx->filename);
           }
           if((write(fd, "", 1)) != 1) /* note that the string "" contains the '\0' byte ... */
           {
-            close(fd);
+            if (!(ctx->flags & TH_ALLOCATOR_MAPPED_FROMFD))
+              close(fd);
             THError("unable to write to file <%s>", ctx->filename);
           }
         }
         else
         {
-          close(fd);
+          if (!(ctx->flags & TH_ALLOCATOR_MAPPED_FROMFD))
+            close(fd);
           THError("file <%s> size is smaller than the required mapping size <%ld>", ctx->filename, size);
         }
       }
     }
     else
-      size = fdsz;
+      size = file_stat.st_size;
 
     ctx->size = size; /* if we are here, it must be the right size */
 
@@ -272,8 +306,30 @@ static void *_map_alloc(void* ctx_, long size)
     else
       data = mmap(NULL, ctx->size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
 
-    if(close(fd) == -1)
-      THError("Error closing file <%s>", ctx->filename);
+    if (ctx->flags & TH_ALLOCATOR_MAPPED_KEEPFD) {
+      ctx->fd = fd;
+    } else {
+      if(close(fd) == -1)
+        THError("Error closing file <%s>", ctx->filename);
+      ctx->fd = -1;
+    }
+
+    if (ctx->flags & TH_ALLOCATOR_MAPPED_UNLINK) {
+      if (ctx->flags & TH_ALLOCATOR_MAPPED_SHAREDMEM)
+      {
+#ifdef HAVE_SHM_UNLINK
+        if (shm_unlink(ctx->filename) == -1)
+          THError("could not unlink the shared memory file %s", ctx->filename);
+#else
+        THError("could not unlink the shared memory file %s, shm_unlink not available on platform", ctx->filename);
+#endif
+      }
+      else if (ctx->flags)
+      {
+        if (unlink(ctx->filename) == -1)
+          THError("could not unlink file %s", ctx->filename);
+      }
+    }
 
     if(data == MAP_FAILED)
     {
@@ -302,16 +358,25 @@ static void THMapAllocator_free(void* ctx_, void* data) {
   if(!UnmapViewOfFile((LPINT)data))
     THError("could not unmap the shared memory file");
 #else /* _WIN32 */
+  if (ctx->flags & TH_ALLOCATOR_MAPPED_KEEPFD) {
+    if (close(ctx->fd) == -1)
+      THError("could not close file descriptor %d", ctx->fd);
+  }
+
   if (munmap(data, ctx->size))
     THError("could not unmap the shared memory file");
-  if (ctx->flags & TH_ALLOCATOR_MAPPED_SHAREDMEM)
+
+  if (!(ctx->flags & (TH_ALLOCATOR_MAPPED_FROMFD | TH_ALLOCATOR_MAPPED_UNLINK)))
   {
+    if (ctx->flags & TH_ALLOCATOR_MAPPED_SHAREDMEM)
+    {
 #ifdef HAVE_SHM_UNLINK
-    if (shm_unlink(ctx->filename) == -1)
-      THError("could not unlink the shared memory file %s", ctx->filename);
+      if (shm_unlink(ctx->filename) == -1)
+        THError("could not unlink the shared memory file %s", ctx->filename);
 #else
-    THError("could not unlink the shared memory file %s, shm_unlink not available on platform", ctx->filename);
+      THError("could not unlink the shared memory file %s, shm_unlink not available on platform", ctx->filename);
 #endif
+    }
   }
 #endif /* _WIN32 */
 
@@ -350,8 +415,14 @@ static void THMapAllocator_free(void* ctx, void* data) {
 static void * THRefcountedMapAllocator_alloc(void *_ctx, long size) {
   THMapAllocatorContext *ctx = _ctx;
 
+  if (ctx->flags & TH_ALLOCATOR_MAPPED_FROMFD)
+    THError("THRefcountedMapAllocator doesn't support TH_ALLOCATOR_MAPPED_FROMFD flag");
+  if (ctx->flags & TH_ALLOCATOR_MAPPED_KEEPFD)
+    THError("THRefcountedMapAllocator doesn't support TH_ALLOCATOR_MAPPED_KEEPFD flag");
+  if (ctx->flags & TH_ALLOCATOR_MAPPED_UNLINK)
+    THError("THRefcountedMapAllocator doesn't support TH_ALLOCATOR_MAPPED_UNLINK flag");
   if (!(ctx->flags & TH_ALLOCATOR_MAPPED_SHAREDMEM))
-    THError("THRefcountedMapAllcator requires SHAREDMEM flag");
+    THError("THRefcountedMapAllocator requires SHAREDMEM flag");
 
   size = size + TH_ALLOC_ALIGNMENT;
   void *ptr = _map_alloc(ctx, size);

@@ -91,6 +91,22 @@ THStorage* THStorage_(newWithSize4)(real data0, real data1, real data2, real dat
   return self;
 }
 
+TH_API void THStorage_(view)(THStorage *dst, THStorage *src, long offset, long size)
+{
+  if (offset < 0 || offset >= src->size) {
+    THError("invalid offset in newView");
+  }
+  if (size < 1 || size > (src->size - offset)) {
+    THError("invalid size in newView");
+  }
+  dst->allocator->free(dst->allocatorContext, dst->data);
+  dst->data = src->data + offset;
+  dst->size = size;
+  dst->flag = TH_STORAGE_REFCOUNTED | TH_STORAGE_VIEW;
+  dst->view = src;
+  THStorage_(retain)(src);
+}
+
 void THStorage_(setFlag)(THStorage *storage, const char flag)
 {
   storage->flag |= flag;

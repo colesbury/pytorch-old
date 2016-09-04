@@ -3,7 +3,7 @@ import multiprocessing.pool
 
 import torch
 from .common import CustomizablePicklingQueue, reduce_torch_object
-from .queue import Queue
+from . import Queue
 
 
 class Pool(multiprocessing.pool.Pool):

@@ -4,6 +4,9 @@ from io import BytesIO
 if sys.version_info[0] >= 3:
     import copyreg
 
+import torch
+from . import _sharing_strategy
+
 # The code below was copied from joblib (https://github.com/joblib/joblib)
 #
 # This software is OSI Certified Open Source Software. OSI Certified is a
@@ -57,8 +60,10 @@ class CustomizablePickler(pickle.Pickler):
 
     def __init__(self, writer, reducers=None, protocol=pickle.HIGHEST_PROTOCOL):
         pickle.Pickler.__init__(self, writer, protocol=protocol)
+        self.extended_init = set()
         if reducers is None:
             reducers = {}
+
         if hasattr(pickle.Pickler, 'dispatch'):
             # Make the dispatch registry an instance level attribute instead of
             # a reference to the class dictionary under Python 2
@@ -67,6 +72,7 @@ class CustomizablePickler(pickle.Pickler):
             # Under Python 3 initialize the dispatch table with a copy of the
             # default registry
             self.dispatch_table = copyreg.dispatch_table.copy()
+
         for type, reduce_func in reducers.items():
             self.register(type, reduce_func)
 
@@ -76,11 +82,35 @@ class CustomizablePickler(pickle.Pickler):
             # Python 2 pickler dispatching is not explicitly customizable.
             # Let us use a closure to workaround this limitation.
             def dispatcher(self, obj):
-                reduced = reduce_func(obj)
+                reduced = reduce_func(self, obj)
                 self.save_reduce(obj=obj, *reduced)
             self.dispatch[type] = dispatcher
         else:
-            self.dispatch_table[type] = reduce_func
+            self.dispatch_table[type] = lambda obj: reduce_func(self, obj)
+
+
+class ExtendedInitPickler(CustomizablePickler):
+
+    def __init__(self, *args, **kwargs):
+        CustomizablePickler.__init__(self, *args, **kwargs)
+        self.extended_init = set()
+
+    def register_extended_init(self, obj):
+        self.extended_init.add(obj)
+
+    def dump(self, obj):
+        sup = super(ExtendedInitPickler, self)
+        sup.dump(obj)
+        sup.dump(self.extended_init)
+
+
+class ExtendedInitUnpickler(pickle.Unpickler):
+
+    def load(self):
+        sup = super(ExtendedInitUnpickler, self)
+        result = sup.load()
+        self.extended_init = sup.load()
+        return result
 
 
 class CustomizablePicklingQueue(object):
@@ -120,26 +150,28 @@ class CustomizablePicklingQueue(object):
     def empty(self):
         return not self._reader.poll()
 
+    def _send_reducers(self, obj):
+        buffer = BytesIO()
+        CustomizablePickler(buffer, self._reducers).dump(obj)
+        self._writer.send_bytes(buffer.getvalue())
+
+    def _load(self):
+        return self._reader.recv()
+
     def _make_methods(self):
         self._recv = recv = self._reader.recv
         racquire, rrelease = self._rlock.acquire, self._rlock.release
 
+        # TODO: unpickle outside of a read lock
         def get():
             racquire()
             try:
-                return recv()
+                return self._load()
             finally:
                 rrelease()
-
         self.get = get
 
-        if self._reducers:
-            def send(obj):
-                buffer = BytesIO()
-                CustomizablePickler(buffer, self._reducers).dump(obj)
-                self._writer.send_bytes(buffer.getvalue())
-        else:
-            send = self._writer.send
+        send = lambda obj: self._send_reducers(obj)
         self._send = send
 
         if self._wlock is None:
@@ -149,6 +181,7 @@ class CustomizablePicklingQueue(object):
             wlock_acquire, wlock_release = (
                 self._wlock.acquire, self._wlock.release)
 
+            # TODO: pickle outside of a write lock
             def put(obj):
                 wlock_acquire()
                 try:
@@ -159,6 +192,10 @@ class CustomizablePicklingQueue(object):
             self.put = put
 
 
-def reduce_torch_object(obj):
-    return (type(obj).new_shared, (obj.share(),))
+def reduce_torch_object(self, obj):
+    handle = obj._shared_serialize()
+    if _sharing_strategy == 'file_descriptor' and torch.isStorage(obj):
+        self.register_extended_init(obj)
+        return (type(obj)._save_shared_args, (handle,))
+    return (type(obj)._shared_deserialize, (handle,))
 
