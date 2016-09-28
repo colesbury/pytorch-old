@@ -22,7 +22,7 @@ def _workerLoop(dataset, index_queue, data_queue, collate_fn):
 # default collate function, puts each data field into a
 # tensor with outer dimension batchSize
 def default_collate(batch):
-    if torch.isTensor(batch[0]):
+    if torch.is_tensor(batch[0]):
         data = batch[0].new(len(batch), *batch[0].size())
         for i in range(len(batch)):
             data[i] = batch[i]
@@ -54,13 +54,13 @@ class DataLoader(object):
             for i in range(num_workers)]
 
         [x.start() for x in self.workers]
-        
+
         # __del__ isn't guaranteed to be called on exit, so this avoids a hang
         import atexit
         atexit.register(self._cleanupWorkers)
-    
+
     def _nextBatch(self):
-        batch = [self.sample_iter.next() for x in range(min(self.samples_remaining, self.batch_size))]
+        batch = [next(self.sample_iter) for x in range(min(self.samples_remaining, self.batch_size))]
         self.samples_remaining -= len(batch)
         return batch
 
@@ -73,7 +73,7 @@ class DataLoader(object):
 
         self.samples_remaining = len(self.sampler)
         self.batches_outstanding = 0
-        self.sample_iter = self.sampler.__iter__()
+        self.sample_iter = iter(self.sampler)
 
         if self.workers:
             # prime the prefetch loop

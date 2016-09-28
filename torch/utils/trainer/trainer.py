@@ -4,11 +4,13 @@ from torch.autograd import Variable
 
 class Trainer(object):
 
-    def __init__(self, model=None, criterion=None, optimizer=None, dataset=None):
+    def __init__(self, model=None, criterion=None, optimizer=None, dataset=None,
+                 cuda=False):
         self.model = model
         self.criterion = criterion
         self.optimizer = optimizer
         self.dataset = dataset
+        self.cuda = cuda
         self.iterations = 0
         self.stats = {}
         self.plugin_queues = {
@@ -53,22 +55,31 @@ class Trainer(object):
     def train(self):
         for i, data in enumerate(self.dataset, self.iterations+1):
             batch_input, batch_target = data
+
+            if self.cuda:
+                batch_input = batch_input.cuda()
+                batch_target = batch_target.cuda()
+
+            # TODO: remove hack due to Nx1 targets not being accepted by criterions
+            if batch_target.dim() == 2 and batch_target.size(1) == 1:
+                batch_target = batch_target.squeeze(1)
+
             self.call_plugins('batch', i, batch_input, batch_target)
             input_var = Variable(batch_input, requires_grad=False)
+            target_var = Variable(batch_target, requires_grad=False)
 
             called_plugins = [False]
+
             def forward_closure():
                 batch_output = self.model(input_var)
-                loss = self.criterion(batch_output, batch_target)
+                loss = self.criterion(batch_output, target_var)
                 if not called_plugins[0]:
                     self.call_plugins('iteration', i, batch_input, batch_target,
-                            batch_output, loss)
+                                      batch_output, loss)
                     called_plugins[0] = True
                 return loss
-
 
             self.optimizer.step(forward_closure)
             self.call_plugins('update', i, self.model)
 
         self.iterations += i
-
