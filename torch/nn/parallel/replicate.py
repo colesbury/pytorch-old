@@ -10,7 +10,10 @@ def _replicate_module(module, gpu, param_remap):
     replica = copy(module)
     replica._parameters = OrderedDict()
     for key, param in module._parameters.items():
-        replica._parameters[key] = param_remap[param]
+        if param is None:
+            replica._parameters[key] = None
+        else:
+            replica._parameters[key] = param_remap[param]
     if isinstance(replica, Container):
         replica.modules = OrderedDict()
         for name, child in module.modules.items():
@@ -31,4 +34,3 @@ def replicate(module, device_ids):
             remap[param] = copy
     return [_replicate_module(module, device_id, remap)
             for device_id, remap in zip(device_ids, param_remap)]
-
