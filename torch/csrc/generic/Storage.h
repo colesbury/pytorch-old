@@ -12,7 +12,6 @@ extern PyObject *THPStorageClass;
 
 #ifdef _THP_CORE
 bool THPStorage_(init)(PyObject *module);
-PyObject * THPStorage_(newWeakObject)(THStorage *storage);
 #endif
 
 #endif

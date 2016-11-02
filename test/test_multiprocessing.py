@@ -1,6 +1,5 @@
 import contextlib
 import gc
-import multiprocessing
 import os
 import sys
 import time
@@ -8,11 +7,13 @@ import unittest
 from sys import platform
 
 import torch
+import torch.cuda
 import torch.multiprocessing as mp
 from common import TestCase
 
 
 HAS_SHM_FILES = os.path.isdir('/dev/shm')
+TEST_CUDA_IPC = torch.cuda.is_available() and sys.version_info[0] == 3
 
 
 def simple_fill(queue, event):
@@ -24,6 +25,18 @@ def simple_fill(queue, event):
 def simple_pool_fill(tensor):
     tensor.fill_(4)
     return tensor.add(1)
+
+
+# Multiply by two in a separate stream
+def cuda_multiply_two(queue, ready, done):
+    ready.set()
+    with torch.cuda.stream(torch.cuda.Stream()):
+        cuda_event, tensor = queue.get()
+        cuda_event.wait()
+        tensor.mul_(2)
+        cuda_event.record()
+        done.set()
+        del cuda_event
 
 
 @contextlib.contextmanager
@@ -86,9 +99,9 @@ class TestMultiprocessing(TestCase):
     def __init__(self, *args, **kwargs):
         super(TestMultiprocessing, self).__init__(*args, **kwargs)
 
-    def _test_sharing(self):
+    def _test_sharing(self, type=torch.FloatTensor):
         def do_test():
-            x = torch.zeros(5, 5)
+            x = torch.zeros(5, 5).type(type)
             q = mp.Queue()
             e = mp.Event()
             data = [x, x[:, 1]]
@@ -178,14 +191,32 @@ class TestMultiprocessing(TestCase):
             del x
             del q  # We have to clean up fds for leak_checker
 
+    @unittest.skipIf(not TEST_CUDA_IPC, 'CUDA IPC not available')
+    def test_cuda(self):
+        self._test_sharing(torch.cuda.FloatTensor)
+
+    @unittest.skipIf(not TEST_CUDA_IPC, 'CUDA IPC not available')
+    def test_event(self):
+        queue = mp.Queue()
+        ready = mp.Event()
+        done = mp.Event()
+        p = mp.Process(target=cuda_multiply_two, args=(queue, ready, done))
+        p.start()
+
+        ready.wait()
+        with torch.cuda.stream(torch.cuda.Stream()):
+            tensor = torch.cuda.FloatTensor([1, 1, 1, 1])
+            # Use a sleep kernel to test events. Without the event, the
+            # multiply happens before the add.
+            event = torch.cuda.Event(interprocess=True)
+            torch.cuda.sleep(20000000)  # about 30 ms
+            tensor.add_(1)
+            event.record()
+            queue.put((event, tensor))
+            done.wait()  # must wait until subprocess records event
+            event.synchronize()
+            self.assertEqual(list(tensor), [4, 4, 4, 4])
+        p.join()
 
 if __name__ == '__main__':
-    start_method = os.environ.get('MULTIPROCESSING_METHOD')
-    if start_method:
-        if sys.version_info < (3, 4):
-            print("Python <3.4 does not support 'multiprocessing.set_start_method'")
-            sys.exit(0)
-        else:
-            print("INFO: Using multiprocessing start method '{}'".format(start_method))
-            multiprocessing.set_start_method(start_method)
     unittest.main()

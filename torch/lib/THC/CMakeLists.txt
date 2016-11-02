@@ -136,6 +136,7 @@ SET(src
 SET(src-cuda
   THCReduceApplyUtils.cu
   THCBlas.cu
+  THCSleep.cu
   THCStorage.cu
   THCStorageCopy.cu
   THCTensor.cu
@@ -198,6 +199,7 @@ INSTALL(FILES
           THC.h
           ${CMAKE_CURRENT_BINARY_DIR}/THCGeneral.h
           THCBlas.h
+          THCSleep.h
           THCStorage.h
           THCStorageCopy.h
           THCStream.h

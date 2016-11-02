@@ -1,6 +1,7 @@
 import multiprocessing
 import multiprocessing.pool
 import multiprocessing.util as util
+import sys
 
 import torch
 from . import Queue
@@ -40,6 +41,9 @@ class Pool(multiprocessing.pool.Pool):
         self._backward_reducers = backward_reducers
 
         poolargs = dict(processes=processes)
+        if sys.version_info[0] == 3:
+            from . import _ctx
+            poolargs['context'] = _ctx
         poolargs.update(kwargs)
         super(Pool, self).__init__(**poolargs)
 
@@ -67,4 +71,3 @@ class Pool(multiprocessing.pool.Pool):
             w.daemon = True
             w.start()
             util.debug('added worker')
-

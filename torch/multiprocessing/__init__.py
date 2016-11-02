@@ -1,8 +1,14 @@
-from sys import platform as _platform
-from multiprocessing import *
+import sys as _sys
+import multiprocessing as _mp
+if _sys.version_info[0] == 3:
+    _ctx = _mp.get_context('forkserver')
+    for key in dir(_ctx):
+        globals()[key] = getattr(_ctx, key)
+else:
+    from multiprocessing import *
+    _ctx = _mp
 
-
-if _platform == 'darwin':
+if _sys.platform == 'darwin':
     _sharing_strategy = 'file_system'
     _all_sharing_strategies = {'file_system'}
 else:
@@ -18,6 +24,7 @@ def set_sharing_strategy(new_strategy):
 
 def get_sharing_strategy():
     return _sharing_strategy
+
 
 def get_all_sharing_strategies():
     return _all_sharing_strategies

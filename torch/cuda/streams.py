@@ -63,13 +63,19 @@ class Stream(torch._C._CudaStreamBase):
                 .format(self.device, self.cuda_stream))
 
 
+class EventHandle(ctypes.Structure):
+    IPC_HANDLE_SIZE = 64
+    _fields_ = [('reserved', ctypes.c_char * IPC_HANDLE_SIZE)]
+
+
 class Event(object):
     DEFAULT = 0x0
     BLOCKING_SYNC = 0x1
     DISABLE_TIMING = 0x2
     INTERPROCESS = 0x4
 
-    def __init__(self, enable_timing=False, blocking=False, interprocess=False):
+    def __init__(self, enable_timing=False, blocking=False, interprocess=False,
+                 handle=None):
         flags = Event.DEFAULT
         if not enable_timing:
             flags |= Event.DISABLE_TIMING
@@ -80,17 +86,26 @@ class Event(object):
 
         ptr = ctypes.c_void_p()
         self._cudart = cudart()
-        check_error(self._cudart.cudaEventCreateWithFlags(ctypes.byref(ptr), flags))
+        if handle:
+            check_error(self._cudart.cudaIpcOpenEventHandle(ctypes.byref(ptr), handle))
+        else:
+            check_error(self._cudart.cudaEventCreateWithFlags(ctypes.byref(ptr), ctypes.c_uint(flags)))
         self._as_parameter_ = ptr
 
     def __del__(self):
-        check_error(self._cudart.cudaEventDestroy(self._as_parameter_))
-        del self._as_parameter_
+        if hasattr(self, '_as_parameter_'):
+            check_error(self._cudart.cudaEventDestroy(self._as_parameter_))
+            del self._as_parameter_
 
     def record(self, stream=None):
         if stream is None:
             stream = torch.cuda.current_stream()
         stream.record_event(self)
+
+    def wait(self, stream=None):
+        if stream is None:
+            stream = torch.cuda.current_stream()
+        stream.wait_event(self)
 
     def query(self):
         res = cudart().cudaEventQuery(self)
@@ -107,6 +122,11 @@ class Event(object):
 
     def synchronize(self):
         check_error(cudart().cudaEventSynchronize(self))
+
+    def ipc_handle(self):
+        handle = EventHandle()
+        check_error(cudart().cudaIpcGetEventHandle(ctypes.byref(handle), self))
+        return handle
 
     def __repr__(self):
         return '<torch.cuda.Event {0:#x}>'.format(self._as_parameter_.value)
