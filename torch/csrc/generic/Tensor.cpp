@@ -63,7 +63,11 @@ static THTensor* THPTensor_(_newWithSize)(THLongStorage *size)
 
 static void THPTensor_(dealloc)(THPTensor* self)
 {
-  THTensor_(free)(LIBRARY_STATE self->cdata);
+  try {
+    THTensor_(free)(LIBRARY_STATE self->cdata);
+  } catch (std::exception &e) {                                                \
+    PyErr_SetString(PyExc_RuntimeError, e.what());                             \
+  }
   Py_TYPE(self)->tp_free((PyObject*)self);
 }
 

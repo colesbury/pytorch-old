@@ -52,6 +52,7 @@ static int THPFunction_traverse(THPFunction *self, visitproc visit, void *arg)
 
 static int THPFunction_clear(THPFunction *self)
 {
+  printf("THPFunction_clear: %p\n", self);
   self->num_inputs = 0;
   self->num_outputs = 0;
 
@@ -307,7 +308,7 @@ PyObject *THPFunction_do_forward(THPFunction *self, PyObject *inputs)
   THPObjectPtr unpacked_inputs = PyTuple_New(num_inputs);
   self->needs_input_grad = PyTuple_New(num_inputs);
   self->requires_grad = false;
-  bool is_volatile = false;
+  self->is_volatile = false;
   for (int i = 0; i < num_inputs; i++) {
     PyObject *input = PyTuple_GET_ITEM(inputs, i);
     THPUtils_assert(THPVariable_Check(input), "expected a Variable argument, "
@@ -321,7 +322,7 @@ PyObject *THPFunction_do_forward(THPFunction *self, PyObject *inputs)
     // We can't move this to C, because it's going to be accessed from user code.
     PyTuple_SET_ITEM(self->needs_input_grad, i, PyBool_FromLong(variable->requires_grad));
 
-    is_volatile = is_volatile || variable->is_volatile;
+    self->is_volatile = self->is_volatile || variable->is_volatile;
     self->requires_grad = self->requires_grad || variable->requires_grad;
   }
 
@@ -343,11 +344,19 @@ PyObject *THPFunction_do_forward(THPFunction *self, PyObject *inputs)
   }
   int num_outputs = PyTuple_GET_SIZE(raw_output.get());
 
+  for (int i = 0; i != num_outputs; ++i) {
+    PyObject *item = PyTuple_GET_ITEM(raw_output.get(), i);
+    if (!THPModule_isTensor(item)) {
+      PyErr_Format(PyExc_TypeError, "not a tensor somewhere fix this plz");
+      return NULL;
+    }
+  }
+
 
   THPObjectPtr outputs = PyTuple_New(num_outputs);
   if (!outputs)
     return NULL;
-  if (is_volatile) {
+  if (self->is_volatile) {
     // If one of the inputs is volatile let's take a fast path - we want
     // minimize the overhead of inference
     for (int i = 0; i < num_outputs; i++) {
@@ -441,8 +450,10 @@ PyObject * THPFunction_do_backward(THPFunction *self, PyObject *args)
   THPUtils_assert(backward_fn.get(), "function %s doesn't implement a required "
       "'backward' method", THPUtils_typename((PyObject*)self));
   THPObjectPtr grad_input = PyObject_CallObject(backward_fn, grad_output.get());
-  if (!grad_input)
+  if (!grad_input) {
+    printf("ERROR CALLIGN BACKWARD: %s\n", THPUtils_typename((PyObject*)self));
     return NULL;
+  }
 
   if (!PyTuple_Check(grad_input)) {
     PyObject *grad_tuple = PyTuple_New(1);
@@ -542,6 +553,7 @@ static struct PyMemberDef THPFunction_members[] = {
   {(char*)"non_differentiable", T_OBJECT, offsetof(THPFunction, non_differentiable), 0, NULL},
   {(char*)"dirty_tensors", T_OBJECT, offsetof(THPFunction, dirty_tensors), 0, NULL},
   {(char*)"needs_input_grad", T_OBJECT, offsetof(THPFunction, needs_input_grad), 0, NULL},
+  {(char*)"volatile", T_BOOL, offsetof(THPFunction, is_volatile), 0, NULL},
   {(char*)"requires_grad", T_BOOL, offsetof(THPFunction, requires_grad), 0, NULL},
   {(char*)"num_inputs", T_INT, offsetof(THPFunction, num_inputs), 0, NULL},
   {(char*)"num_outputs", T_INT, offsetof(THPFunction, num_outputs), 0, NULL},
@@ -603,4 +615,3 @@ bool THPFunction_initModule(PyObject *module)
   PyModule_AddObject(module, "_FunctionBase", (PyObject *)&THPFunctionType);
   return true;
 }
-

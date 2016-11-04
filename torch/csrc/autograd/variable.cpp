@@ -14,7 +14,9 @@ static inline THPVariable * pop_cache(PyObject *data, PyObject *creator, char re
 {
   THPVariable *self = cached_variables[--num_cached];
   PyObject_Init((PyObject*)self, Py_TYPE(self));
+  printf("PyObject_GC_Track...: %p %d\n", self, (int)num_cached);
   PyObject_GC_Track(self);
+  printf("...PyObject_GC_Track\n");
 
   self->is_volatile = 0;
   self->version_counter = new THPVariableVersion();
@@ -63,6 +65,7 @@ static int THPVariable_traverse(THPVariable *self, visitproc visit, void *arg)
 
 static int THPVariable_clear(THPVariable *self)
 {
+  printf("THPVariable_clear: %p\n", self);
   Py_CLEAR(self->creator);
   Py_CLEAR(self->data);
   Py_CLEAR(self->grad);
@@ -70,17 +73,29 @@ static int THPVariable_clear(THPVariable *self)
   return 0;
 }
 
+static int in_backward = 0;
+
 static void THPVariable_dealloc(THPVariable* self)
 {
+  printf("THPVariable_dealloc: %p %p freed: %d in_backward: %d\n", self, self->version_counter, self->freed, in_backward);
+  if (self->freed) {
+    abort();
+  }
+  in_backward = 1;
+  self->freed = 1;
+  printf("Py_XDECREF(self->creator);\n");
   Py_XDECREF(self->creator);
+  printf("Py_XDECREF(self->data);\n");
   Py_XDECREF(self->data);
+  printf("Py_XDECREF(self->grad);\n");
   Py_XDECREF(self->grad);
   Py_XDECREF(self->backward_hooks);
   delete self->version_counter;
   self->version_counter = nullptr;
 
   // We don't want to cache any subclasses
-  if ((PyObject*)Py_TYPE(self) == THPVariableClass && num_cached < CACHE_SIZE) {
+  if (0 && (PyObject*)Py_TYPE(self) == THPVariableClass && num_cached < CACHE_SIZE) {
+    printf("Untracking: %p %d\n", self, (int)num_cached);
     PyObject_GC_UnTrack(self);
     cached_variables[num_cached++] = self;
     // Variable class is defined in Python code, and as such has a
@@ -90,6 +105,7 @@ static void THPVariable_dealloc(THPVariable* self)
   } else {
     Py_TYPE(self)->tp_free((PyObject*)self);
   }
+  in_backward = 0;
 }
 
 PyObject *THPVariable_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
@@ -98,6 +114,7 @@ PyObject *THPVariable_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
   if ((PyObject*)type != THPVariableClass || num_cached == 0) {
     self = (THPVariable*)type->tp_alloc(type, 0);
     self->version_counter = new THPVariableVersion();
+    printf("THPVariable_new: %p\n", self);
   } else {
     self = pop_cache(NULL, NULL, 0);
   }
@@ -115,8 +132,16 @@ int THPVariable_init(THPVariable *self, PyObject *args, PyObject *kwargs)
   if (self->creator == Py_None)
     self->creator = NULL;
   Py_XINCREF(self->creator);
-  if ((self->creator && !THPFunction_Check(self->creator)) || !THPModule_isTensor(self->data))
+  if ((self->creator && !THPFunction_Check(self->creator))) {
+    PyErr_Format(PyExc_TypeError, "creator is not an 'autograd.Function' (got '%s')",
+        Py_TYPE(self->creator)->tp_name);
     return -1;
+  }
+  if (!THPModule_isTensor(self->data)) {
+    PyErr_Format(PyExc_TypeError, "data is not a tensor (got '%s')",
+        Py_TYPE(self->data)->tp_name);
+    return -1;
+  }
   return 0;
 }
 
@@ -262,4 +287,3 @@ bool THPVariable_initModule(PyObject *module)
   PyModule_AddObject(module, "_VariableBase", (PyObject *)&THPVariableType);
   return true;
 }
-

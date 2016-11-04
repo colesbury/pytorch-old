@@ -32,7 +32,19 @@ static cudaError_t THCIpcAllocator_malloc(void* ctx, void** devPtr, size_t size,
 
 static cudaError_t THCIpcAllocator_free(void* ctx, void* devPtr)
 {
-  return cudaIpcCloseMemHandle(devPtr);
+  cudaError_t err;
+  int prev_device;
+  int device = *(int*)ctx;
+  free(ctx);
+  if ((err = cudaGetDevice(&prev_device)) != cudaSuccess) {
+    return err;
+  }
+  if ((err = cudaSetDevice(device)) != cudaSuccess) {
+    return err;
+  }
+  err = cudaIpcCloseMemHandle(devPtr);
+  cudaSetDevice(prev_device);
+  return err;
 }
 
 THCDeviceAllocator THCIpcAllocator = {

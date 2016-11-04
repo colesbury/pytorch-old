@@ -2,6 +2,7 @@ import sys as _sys
 import multiprocessing as _mp
 if _sys.version_info[0] == 3:
     _ctx = _mp.get_context('forkserver')
+    print('creating forkserver...')
     for key in dir(_ctx):
         globals()[key] = getattr(_ctx, key)
 else:

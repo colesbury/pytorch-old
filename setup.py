@@ -12,7 +12,7 @@ import os
 CUDA_HOME = os.getenv('CUDA_HOME', '/usr/local/cuda')
 WITH_CUDA = os.path.exists(CUDA_HOME)
 WITH_CUDNN = WITH_CUDA
-DEBUG = False
+DEBUG = True
 
 ################################################################################
 # Monkey-patch setuptools to compile in parallel

@@ -134,6 +134,8 @@ static PyObject * THPStorage_(_share_cuda)(THPStorage *self)
   THPObjectPtr _offset = PyLong_FromLong(0);
   THPObjectPtr view_size = PyLong_FromLong(storage->size);
   if (storage->data) {
+    THCPAutoGPU __autogpu(storage->device);
+
     size_t base_size;
     void *base_ptr = THCCachingAllocator_getBaseAllocation(storage->data, &base_size);
     ptrdiff_t offset = (char*)storage->data - (char*)base_ptr;
@@ -349,7 +351,9 @@ static THStorage * THPStorage_(_newShared_cuda)(PyObject *args)
   ptrdiff_t offset = (ptrdiff_t)THPUtils_unpackLong(_offset);
   size_t view_size =  (size_t)THPUtils_unpackLong(_view_size);
 
-  THCPAutoGPU((int)THPUtils_unpackLong(_device));
+  int device = (int)THPUtils_unpackLong(_device);
+  THCPAutoGPU __autogpu(device);
+  printf("newShared_cuda on %d\n", ((int)THPUtils_unpackLong(_device)));
 
   char *buffer;
   Py_ssize_t handle_size;
@@ -362,8 +366,11 @@ static THStorage * THPStorage_(_newShared_cuda)(PyObject *args)
   void *devPtr = NULL;
   THCudaCheck(cudaIpcOpenMemHandle(&devPtr, handle, cudaIpcMemLazyEnablePeerAccess));
 
+  printf("cudaIpcOpenMemHandle(): %p on device %d\n", devPtr, device);
+  int *ctx = (int *)malloc(sizeof(int));
+  *ctx = device;
   THStoragePtr base = THStorage_(newWithDataAndAllocator)(
-      LIBRARY_STATE (real*)devPtr, storage_size, &THCIpcAllocator, NULL);
+      LIBRARY_STATE (real*)devPtr, storage_size, &THCIpcAllocator, ctx);
   base->flag = TH_STORAGE_REFCOUNTED | TH_STORAGE_FREEMEM;
 
   if (offset != 0 || view_size != storage_size) {

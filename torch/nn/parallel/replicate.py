@@ -2,6 +2,7 @@ from copy import copy
 from collections import OrderedDict
 
 from ..modules.container import Container
+from ..parameter import Parameter
 import torch.cuda.comm as comm
 
 
@@ -22,7 +23,7 @@ def _replicate_module(module, gpu, param_remap):
     return replica
 
 
-def replicate(module, device_ids):
+def replicate(module, device_ids, unlink=False):
     from .functions import Broadcast
     seen_params = set()
     param_remap = [{} for dev_id in device_ids]
@@ -30,7 +31,12 @@ def replicate(module, device_ids):
         if param in seen_params:
             continue
         seen_params.add(param)
-        param_copies = Broadcast(device_ids)(param)
+        if unlink:
+            tensors = comm.broadcast(param.data, device_ids)
+            param_copies = [Parameter(t, param.requires_grad) for t in tensors]
+            print('copy devices: ', [c.get_device() for c in param_copies])
+        else:
+            param_copies = Broadcast(device_ids)(param)
         for param_copy, remap in zip(param_copies, param_remap):
             remap[param] = param_copy
     for m in module.modules():

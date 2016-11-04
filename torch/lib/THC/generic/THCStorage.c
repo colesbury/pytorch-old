@@ -179,7 +179,7 @@ void THCStorage_(free)(THCState *state, THCStorage *self)
     if(self->flag & TH_STORAGE_FREEMEM) {
       THCHeapUpdate(state, -self->size * sizeof(real));
       THCudaCheck(
-        (*self->allocator->free)(self->allocatorContext, self->data));
+          (*self->allocator->free)(self->allocatorContext, self->data));
     }
     if(self->flag & TH_STORAGE_VIEW) {
       THCStorage_(free)(state, self->view);

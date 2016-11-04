@@ -7,4 +7,3 @@ class Parameter(Variable):
 
     def __repr__(self):
         return 'Parameter containing:' + self.data.__repr__()
-

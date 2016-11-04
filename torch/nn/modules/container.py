@@ -199,10 +199,8 @@ class Sequential(Container):
             for key, module in args[0].items():
                 self.add_module(key, module)
         else:
-            idx = 0
-            for module in args:
-                self.add_module(str(idx), module)
-                idx += 1
+            for i, module in enumerate(args):
+                self.add_module(str(i), module)
 
     def __getitem__(self, idx):
         if idx < 0 or idx >= len(self._modules):

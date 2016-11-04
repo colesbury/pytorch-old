@@ -43,6 +43,7 @@ struct THPFunction {
     std::vector<output_info_type> *output_info;
     int num_inputs;
     int num_outputs;
+    char is_volatile;
     char requires_grad;
     char has_freed_buffers;
 };

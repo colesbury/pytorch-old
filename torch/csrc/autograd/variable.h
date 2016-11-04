@@ -42,6 +42,7 @@ struct THPVariable {
     int output_nr;
     char is_volatile;
     char requires_grad;
+    int freed;
 };
 
 bool THPVariable_initModule(PyObject *module);

@@ -151,6 +151,7 @@ struct THCCachingAllocator
 
     auto it = allocated_blocks.find(ptr);
     if (it == allocated_blocks.end()) {
+      printf("THCCachingAllocator.free: invalid pointer: %p\n", ptr);
       return cudaErrorInvalidDevicePointer;
     }
 
