@@ -1,10 +1,11 @@
 #include <Python.h>
 #include <structmember.h>
 
-#include <vector>
-#include <unordered_map>
 #include <deque>
 #include <set>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
 #include "THP.h"
 
@@ -103,70 +104,13 @@ bool THPEngine_add_grad(buffer_set_type &need_copy, grad_buffer_type &prev_grad,
   return true;
 }
 
-// Main backward function
-PyObject *THPEngine_run_backward(THPEngine *self, PyObject *args, PyObject *kwargs)
+static PyObject *THPEngine_process_ready_queue(
+    THPEngine *self, ready_queue_type &ready,
+    std::unordered_map<THPFunction *, grad_buffer_type> &not_ready,
+    dependencies_type &dependencies, size_t &next_buf_id,
+    bool retain_variables, buffer_set_type &need_copy, bool &has_error)
 {
-  PyObject *variables = NULL;
-  PyObject *grad_variables = NULL;
-  unsigned char retain_variables = 0;
-  size_t next_buf_id = 0;
-  const char *accepted_kwargs[] = {"variables", "grad_variables",
-      "retain_variables", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOb", (char**)accepted_kwargs,
-        &variables, &grad_variables, &retain_variables))
-    return NULL;
-  PyObject *retain_variables_obj = retain_variables ? Py_True : Py_False;
-
-  THPUtils_assert(retain_variables_obj == Py_True || retain_variables_obj == Py_False,
-      "retain_variables argument is expected to be a bool, but got %s",
-      THPUtils_typename(retain_variables_obj));
-  THPUtils_assert(PyTuple_Check(variables), "variables argument is expected to "
-      "be a tuple, but got %s", THPUtils_typename(variables));
-  THPUtils_assert(PyTuple_Check(grad_variables), "variables argument is "
-      "expected to be a tuple, but got %s", THPUtils_typename(grad_variables));
-
-  Py_ssize_t num_variables = PyTuple_GET_SIZE(variables);
-  Py_ssize_t num_gradients = PyTuple_GET_SIZE(grad_variables);
-  THPUtils_assert(num_variables == num_gradients, "got %ld variables and %ld "
-      "gradients", num_variables, num_gradients);
-
-  ready_queue_type ready;
-  std::unordered_map<THPFunction *, grad_buffer_type> not_ready;
-  dependencies_type dependencies;
-  buffer_set_type need_copy;
-
-  bool did_leaf_backward = false;
-  std::vector<THPFunction*> creators;
-  for (int i = 0; i < num_variables; i++) {
-    THPVariable *variable = (THPVariable*)PyTuple_GET_ITEM(variables, i);
-    PyObject *grad = PyTuple_GET_ITEM(grad_variables, i);
-    THPUtils_assert(THPVariable_Check((PyObject*)variable), "element %d of variables "
-        "tuple is not a Variable", i);
-    // If someone calls .backward() on a leaf, it's simple...
-    if (variable->creator == NULL && variable->requires_grad) {
-      THPObjectPtr result = PyObject_CallMethod((PyObject*)variable,
-              "_do_backward", "(O)O", grad, retain_variables_obj);
-      if (!result) return NULL;
-      did_leaf_backward = true;
-      continue;
-    }
-    THPFunction *creator = (THPFunction*)variable->creator;
-    creators.push_back(creator);
-    // Initialize the queue
-    if (creator->requires_grad) {
-      grad_buffer_type buf(next_buf_id++, creator->num_outputs);
-      Py_INCREF(grad);
-      buf[variable->output_nr] = grad;
-      ready.emplace_front(creator, std::move(buf));
-    }
-  }
-
-  THPEngine_compute_dependencies(std::move(creators), dependencies, ready);
-
-  THPUtils_assert(did_leaf_backward || ready.size() > 0, "there are no graph "
-      "nodes that require computing gradients");
-
-  while (ready.size() > 0) {
+  while (ready.size() > 0 && !has_error) {
     std::pair<THPFunction *, grad_buffer_type> ready_pair =
         std::move(ready.back()); ready.pop_back();
     THPFunction *fn = ready_pair.first;
@@ -188,7 +132,7 @@ PyObject *THPEngine_run_backward(THPEngine *self, PyObject *args, PyObject *kwar
 
     // Call _do_backward and make sure grad_input is sound
     THPObjectPtr grad_input = PyObject_CallMethod((PyObject*)fn, "_do_backward",
-        "OO", grad_tuple.get(), retain_variables_obj);
+        "OO", grad_tuple.get(), retain_variables ? Py_True : Py_False);
     if (!grad_input)
       return NULL;
     THPUtils_assert(PyTuple_Check(grad_input), "error, _do_backward should "
@@ -207,7 +151,7 @@ PyObject *THPEngine_run_backward(THPEngine *self, PyObject *args, PyObject *kwar
         THPVariable *prev_var = (THPVariable*)prev_obj;
         if (prev_var->requires_grad) {
           THPObjectPtr ret = PyObject_CallMethod(prev_obj, "_do_backward",
-              "(O)O", grad_prev, retain_variables_obj);
+              "(O)O", grad_prev, retain_variables ? Py_True : Py_False);
           if (!ret) return NULL;
         }
         continue;
@@ -253,6 +197,99 @@ PyObject *THPEngine_run_backward(THPEngine *self, PyObject *args, PyObject *kwar
             return NULL;
       }
     }
+  }
+
+  Py_RETURN_NONE;
+}
+
+// Main backward function
+PyObject *THPEngine_run_backward(THPEngine *self, PyObject *args, PyObject *kwargs)
+{
+  PyObject *variables = NULL;
+  PyObject *grad_variables = NULL;
+  unsigned char retain_variables = 0;
+  size_t next_buf_id = 0;
+  const char *accepted_kwargs[] = {"variables", "grad_variables",
+      "retain_variables", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOb", (char**)accepted_kwargs,
+        &variables, &grad_variables, &retain_variables))
+    return NULL;
+
+  THPUtils_assert(PyTuple_Check(variables), "variables argument is expected to "
+      "be a tuple, but got %s", THPUtils_typename(variables));
+  THPUtils_assert(PyTuple_Check(grad_variables), "variables argument is "
+      "expected to be a tuple, but got %s", THPUtils_typename(grad_variables));
+
+  Py_ssize_t num_variables = PyTuple_GET_SIZE(variables);
+  Py_ssize_t num_gradients = PyTuple_GET_SIZE(grad_variables);
+  THPUtils_assert(num_variables == num_gradients, "got %ld variables and %ld "
+      "gradients", num_variables, num_gradients);
+
+  ready_queue_type ready;
+  dependencies_type dependencies;
+
+  bool did_leaf_backward = false;
+  std::vector<THPFunction*> creators;
+  for (int i = 0; i < num_variables; i++) {
+    THPVariable *variable = (THPVariable*)PyTuple_GET_ITEM(variables, i);
+    PyObject *grad = PyTuple_GET_ITEM(grad_variables, i);
+    THPUtils_assert(THPVariable_Check((PyObject*)variable), "element %d of variables "
+        "tuple is not a Variable", i);
+    // If someone calls .backward() on a leaf, it's simple...
+    if (variable->creator == NULL && variable->requires_grad) {
+      THPObjectPtr result = PyObject_CallMethod((PyObject*)variable,
+              "_do_backward", "(O)O", grad, retain_variables ? Py_True : Py_False);
+      if (!result) return NULL;
+      did_leaf_backward = true;
+      continue;
+    }
+    THPFunction *creator = (THPFunction*)variable->creator;
+    creators.push_back(creator);
+    // Initialize the queue
+    if (creator->requires_grad) {
+      grad_buffer_type buf(next_buf_id++, creator->num_outputs);
+      Py_INCREF(grad);
+      buf[variable->output_nr] = grad;
+      ready.emplace_front(creator, std::move(buf));
+    }
+  }
+
+  THPEngine_compute_dependencies(std::move(creators), dependencies, ready);
+
+  THPUtils_assert(did_leaf_backward || ready.size() > 0, "there are no graph "
+      "nodes that require computing gradients");
+
+  std::unordered_map<THPFunction *, grad_buffer_type> not_ready;
+  buffer_set_type need_copy;
+
+  std::vector<std::thread> threads;
+  bool has_error = false;
+
+  PyObject *type, *value, *traceback;
+
+  for (int i = 0; i < 8; ++i) {
+    threads.push_back(std::thread([&, i]{
+      PyGILState_STATE gstate = PyGILState_Ensure();
+      THPObjectPtr r = THPEngine_process_ready_queue(
+          self, ready, not_ready, dependencies, next_buf_id, retain_variables,
+          need_copy, has_error);
+      if (!r.get()) {
+        PyErr_Fetch(&type, &value, &traceback);
+        has_error = true;
+      }
+      PyGILState_Release(gstate);
+    }));
+  }
+
+  Py_BEGIN_ALLOW_THREADS
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  Py_END_ALLOW_THREADS
+
+  if (has_error) {
+    PyErr_Restore(type, value, traceback);
+    return NULL;
   }
 
   Py_RETURN_NONE;
@@ -319,4 +356,3 @@ bool THPEngine_initModule(PyObject *module)
   PyModule_AddObject(module, "_ImperativeEngine", (PyObject *)&THPEngineType);
   return true;
 }
-
