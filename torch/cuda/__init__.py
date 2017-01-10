@@ -297,3 +297,4 @@ torch._tensor_classes.add(ByteTensor)
 torch._tensor_classes.add(HalfTensor)
 
 from .streams import Stream, Event
+from . import profiler
