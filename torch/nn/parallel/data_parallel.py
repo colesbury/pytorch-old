@@ -32,15 +32,17 @@ class DataParallel(Container):
         self.module = module
         self.device_ids = device_ids
         self.output_device = output_device
+        self.replicas = None
         if len(self.device_ids) == 1:
             self.module.cuda(device_ids[0])
 
     def forward(self, input):
         if len(self.device_ids) == 1:
             return self.module(input.cuda(self.device_ids[0]))
-        replicas = self.replicate(self.module, self.device_ids)
+        if self.replicas is None:
+            self.replicas = self.replicate(self.module, self.device_ids)
         inputs = self.scatter(input, self.device_ids)
-        replicas = replicas[:len(inputs)]
+        replicas = self.replicas[:len(inputs)]
         outputs = self.parallel_apply(replicas, inputs)
         return self.gather(outputs, self.output_device)
 

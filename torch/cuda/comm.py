@@ -11,7 +11,7 @@ def broadcast(tensor, devices):
         for device in devices[1:]:
             with torch.cuda.device(device):
                 tensors.append(type(tensor)(tensor.size()))
-        nccl.broadcast(tensors)
+        #nccl.broadcast(tensors)
         return tuple(tensors)
 
     # TODO: copy to a pinned buffer first (if copy is from CPU)
@@ -37,7 +37,7 @@ def reduce_add(inputs, destination=None):
 
     if nccl.is_available(inputs) and inputs[0].get_device() == destination:
         outputs = [result] + [t.new(t.size()) for t in inputs[1:]]
-        nccl.reduce(inputs, outputs)
+        #nccl.reduce(inputs, outputs)
         return result
 
     for inp in inputs:
