@@ -380,7 +380,7 @@ static PyObject * THPModule_randperm(PyObject *_unused, PyObject *args, PyObject
   return PyObject_Call(method, args, kwargs);
 }
 
-static PyObject * THPModule_cat(PyObject *_unused, PyObject *args)
+static PyObject * THPModule_cat(PyObject *_unused, PyObject *args, PyObject *kwargs)
 {
   PyObject *tensor = THPDefaultTensorClass;
   THPObjectPtr iterator;
@@ -404,7 +404,7 @@ static PyObject * THPModule_cat(PyObject *_unused, PyObject *args)
   THPObjectPtr method = PyObject_GetAttrString(methods, "cat");
   THPUtils_assert(method, "Type %s doesn't implement stateless method cat",
       tensor == THPDefaultTensorClass ? THPUtils_classname(tensor) : THPUtils_typename(tensor));
-  return PyObject_Call(method, args, NULL);
+  return PyObject_Call(method, args, kwargs);
 }
 
 PyObject *THPModule_safeCall(PyObject *_unused, PyObject *args, PyObject *kwargs)
@@ -612,7 +612,7 @@ static PyMethodDef TorchMethods[] = {
   {"range",           (PyCFunction)THPModule_range,             METH_VARARGS | METH_KEYWORDS, NULL},
   {"gather",          (PyCFunction)THPModule_gather,            METH_VARARGS | METH_KEYWORDS, NULL},
   {"scatter",         (PyCFunction)THPModule_scatter,           METH_VARARGS | METH_KEYWORDS, NULL},
-  {"cat",             (PyCFunction)THPModule_cat,               METH_VARARGS, NULL},
+  {"cat",             (PyCFunction)THPModule_cat,               METH_VARARGS | METH_KEYWORDS, NULL},
   {"masked_select",   (PyCFunction)THPModule_masked_select,     METH_VARARGS | METH_KEYWORDS, NULL},
   {"gesv",            (PyCFunction)THPModule_gesv,              METH_VARARGS | METH_KEYWORDS, NULL},
   {"gels",            (PyCFunction)THPModule_gels,              METH_VARARGS | METH_KEYWORDS, NULL},

@@ -52,8 +52,18 @@ static THTensor* THPTensor_(_new)()
   return tensor.release();
 }
 
-static THTensor* THPTensor_(_newWithSize)(THLongStorage *size)
+static THTensor* THPTensor_(_newWithSize)(THLongStorage *size, bool shared)
 {
+#ifndef THC_GENERIC_FILE
+  if (shared) {
+    ptrdiff_t total_size = 1;
+    for (int i = 0; i != size->size; ++i) {
+      total_size *= size->data[i];
+    }
+    THStoragePtr storage = THStorage_(newSharedWithSize)(total_size);
+    return THTensor_(newWithStorage)(storage.get(), 0, size, NULL);
+  }
+#endif
   THTensorPtr tensor = THTensor_(newWithSize)(LIBRARY_STATE size, NULL);
   if (!tensor->storage) {
     tensor->storage = THStorage_(new)(LIBRARY_STATE_NOARGS);
@@ -147,6 +157,7 @@ static PyObject * THPTensor_(pynew)(PyTypeObject *type, PyObject *args, PyObject
     return NULL;
   }
   self->cdata = NULL;
+  bool shared = false;
 #ifdef THC_GENERIC_FILE
   THCPAutoGPU gpu_guard;
 #endif
@@ -162,6 +173,15 @@ static PyObject * THPTensor_(pynew)(PyTypeObject *type, PyObject *args, PyObject
       THPUtils_assert(THPUtils_checkLong(device_id), "device argument "
           " has to be an int, but got %s", THPUtils_typename(device_id));
       gpu_guard.setDevice(THPUtils_unpackLong(device_id));
+      // simulate pop() and pretend this key was never there
+      num_kwargs--;
+    }
+#else
+    PyObject *shared_obj = PyDict_GetItemString(kwargs, "shared");
+    if (shared_obj) {
+      THPUtils_assert(PyBool_Check(shared_obj), "keyword argument 'shared' "
+          " must be a bool, but got %s", THPUtils_typename(shared_obj));
+      shared = (shared_obj == Py_True);
       // simulate pop() and pretend this key was never there
       num_kwargs--;
     }
@@ -194,6 +214,7 @@ static PyObject * THPTensor_(pynew)(PyTypeObject *type, PyObject *args, PyObject
 
   // torch.Tensor(torch.Tensor tensor)
   if (num_args == 1 && THPTensor_(Check)(first_arg)) {
+    THPUtils_assert(!shared, "'shared' is invalid");
     THTensor *tensor = ((THPTensor*)first_arg)->cdata;
     self->cdata = THTensor_(newWithTensor)(LIBRARY_STATE tensor);
     return (PyObject*)self.release();
@@ -202,13 +223,14 @@ static PyObject * THPTensor_(pynew)(PyTypeObject *type, PyObject *args, PyObject
   // torch.Tensor(torch.Size sizes)
   if (num_args == 1 && THPSize_Check(first_arg)) {
     THLongStoragePtr sizes = THPUtils_unpackSize(first_arg);
-    self->cdata = THPTensor_(_newWithSize)(sizes.get());
+    self->cdata = THPTensor_(_newWithSize)(sizes.get(), shared);
     return (PyObject *)self.release();
   }
 
   // TODO: implement storageOffset, sizes and strides
   // torch.Tensor(torch.Storage data)
   if (num_args == 1 && THPStorage_(Check)(first_arg)) {
+    THPUtils_assert(!shared, "'shared' is invalid");
     THStorage *storage = ((THPStorage*)first_arg)->cdata;
     self->cdata = THTensor_(newWithStorage1d)(LIBRARY_STATE storage, 0, storage->size, -1);
     return (PyObject *)self.release();
@@ -229,6 +251,7 @@ static PyObject * THPTensor_(pynew)(PyTypeObject *type, PyObject *args, PyObject
 
   // torch.Tensor(Sequence data)
   if (num_args == 1 && PySequence_Check(first_arg)) {
+    THPUtils_assert(!shared, "'shared' is invalid");
     Py_ssize_t length = PySequence_Length(first_arg);
     THPUtils_assert(length >= 0, "couldn't obtain the length of %s",
         THPUtils_typename(first_arg));
@@ -378,7 +401,7 @@ static PyObject * THPTensor_(pynew)(PyTypeObject *type, PyObject *args, PyObject
   // torch.Tensor(int ...)
   THLongStoragePtr sizes;
   if (THPUtils_tryUnpackLongVarArgs(args, 0, sizes)) {
-    self->cdata = THPTensor_(_newWithSize)(sizes.get());
+    self->cdata = THPTensor_(_newWithSize)(sizes.get(), shared);
     return (PyObject *)self.release();
   }
 

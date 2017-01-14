@@ -65,6 +65,43 @@ static std::string THPStorage_(__newHandle)() {
   return handle;
 }
 
+static THStorage* THStorage_(newShared)(ptrdiff_t size, bool use_fd)
+{
+  std::string handle = THPStorage_(__newHandle)();
+  THStoragePtr storage;
+  if (use_fd) {
+    int flags = TH_ALLOCATOR_MAPPED_SHAREDMEM |
+                TH_ALLOCATOR_MAPPED_EXCLUSIVE |
+                TH_ALLOCATOR_MAPPED_KEEPFD |
+                TH_ALLOCATOR_MAPPED_UNLINK;
+    void *ctx = THMapAllocatorContext_new(handle.c_str(), flags);
+    return THStorage_(newWithAllocator)(size, &THMapAllocator, ctx);
+  } else {
+    int flags = TH_ALLOCATOR_MAPPED_SHAREDMEM |
+                TH_ALLOCATOR_MAPPED_EXCLUSIVE;
+    void *ctx = libshm_context_new(NULL, handle.c_str(), flags);
+    return THStorage_(newWithAllocator)(size, &THManagedSharedAllocator, ctx);
+  }
+}
+
+THStorage* THStorage_(newSharedWithSize)(ptrdiff_t size)
+{
+  THPObjectPtr multiprocessing = PyImport_ImportModule("torch.multiprocessing");
+  if (!multiprocessing) return NULL;
+  THPObjectPtr func = PyObject_GetAttrString(multiprocessing, "get_sharing_strategy");
+  if (!func) return NULL;
+  THPObjectPtr strategy = PyObject_CallObject(func, NULL);
+  if (!strategy) return NULL;
+#if PY_MAJOR_VERSION == 3
+  strategy = PyUnicode_AsUTF8String(strategy);
+  if (!strategy) return NULL;
+#endif
+  const char* strategy_name = PyBytes_AsString(strategy);
+  if (!strategy_name) return NULL;
+  bool use_fd =  (strcmp(strategy_name, "file_descriptor") == 0);
+  return THStorage_(newShared)(size, use_fd);
+}
+
 static PyObject * THPStorage_(shareFilename)(THPStorage *self)
 {
   HANDLE_TH_ERRORS
@@ -79,11 +116,8 @@ static PyObject * THPStorage_(shareFilename)(THPStorage *self)
   } else {
     // TODO: retry on collision
     // TODO: free GIL - but remember to reacquire it when an exception is thrown
-    std::string handle = THPStorage_(__newHandle)();
-    ctx = libshm_context_new(NULL, handle.c_str(),
-            TH_ALLOCATOR_MAPPED_SHAREDMEM | TH_ALLOCATOR_MAPPED_EXCLUSIVE);
-    THStoragePtr new_storage = THStorage_(newWithAllocator)(storage->size,
-            &THManagedSharedAllocator, (void*)ctx);
+    THStoragePtr new_storage = THStorage_(newShared)(storage->size, false);
+    ctx = (libshm_context*)new_storage->allocatorContext;
     THStorage_(copy)(new_storage, storage);
     THStorage_(swap)(storage, new_storage);
   }
@@ -136,14 +170,8 @@ static PyObject * THPStorage_(shareFd)(THPStorage *self)
     auto allocator_obj = ((StorageWeakRefAllocator*)storage->allocatorContext);
     ctx = (THMapAllocatorContext*)allocator_obj->allocatorContext;
   } else {
-    int flags = TH_ALLOCATOR_MAPPED_SHAREDMEM |
-                TH_ALLOCATOR_MAPPED_EXCLUSIVE |
-                TH_ALLOCATOR_MAPPED_KEEPFD |
-                TH_ALLOCATOR_MAPPED_UNLINK;
-    std::string handle = THPStorage_(__newHandle)();
-    ctx = THMapAllocatorContext_new(handle.c_str(), flags);
-    THStoragePtr new_storage = THStorage_(newWithAllocator)(storage->size,
-            &THMapAllocator, (void*)ctx);
+    THStoragePtr new_storage = THStorage_(newShared)(storage->size, true);
+    ctx = (THMapAllocatorContext*)new_storage->allocatorContext;
     THStorage_(copy)(new_storage, storage);
     THStorage_(swap)(storage, new_storage);
   }

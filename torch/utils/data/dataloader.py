@@ -12,6 +12,9 @@ else:
     import queue
 
 
+in_worker = False
+
+
 class ExceptionWrapper(object):
     "Wraps an exception plus traceback to communicate across threads"
 
@@ -21,6 +24,8 @@ class ExceptionWrapper(object):
 
 
 def _worker_loop(dataset, index_queue, data_queue, collate_fn):
+    global in_worker
+    in_worker = True
     torch.set_num_threads(1)
     while True:
         r = index_queue.get()
@@ -61,6 +66,7 @@ def _pin_memory_loop(in_queue, out_queue, done_event):
 def default_collate(batch):
     "Puts each data field into a tensor with outer dimension batch size"
     if torch.is_tensor(batch[0]):
+        # tensor = torch.Tensor(len(batch), *batch[0].size(), shared=in_worker)
         return torch.cat([t.unsqueeze(0) for t in batch], 0)
     elif isinstance(batch[0], int):
         return torch.LongTensor(batch)

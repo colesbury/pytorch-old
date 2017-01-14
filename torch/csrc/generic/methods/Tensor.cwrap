@@ -603,8 +603,9 @@ PyObject * THPTensor_(stride)(PyObject *self, PyObject *args, PyObject *kwargs)
   python_name: cat
   only_register: True
   only_stateless: True
+  method_flags: METH_KEYWORDS
 ]]
-static PyObject * THPTensor_stateless_(cat)(THPTensor *_unused, PyObject *args)
+static PyObject * THPTensor_stateless_(cat)(THPTensor *_unused, PyObject *args, PyObject *kwargs)
 {
 #if IS_CUDA && THCP_AUTO_GPU
   THCPAutoGPU __autogpu_guard = THCPAutoGPU(args);
@@ -614,6 +615,7 @@ static PyObject * THPTensor_stateless_(cat)(THPTensor *_unused, PyObject *args)
   std::vector<THPObjectPtr> items;
   std::vector<THTensor *> item_tensors;
   PyObject *sequence;
+  PyObject *out;
   Py_ssize_t seq_length;
   THPTensorPtr result;
   long dimension = -1;
@@ -624,6 +626,17 @@ static PyObject * THPTensor_stateless_(cat)(THPTensor *_unused, PyObject *args)
   seq_length = PySequence_Length(sequence);
   if (seq_length <= 0)
     goto invalid_arguments;
+
+  out = kwargs ? PyDict_GetItemString(kwargs, "out") : NULL;
+  if (out && (PyObject*)Py_TYPE(out) == THPTensorClass) {
+    Py_INCREF(out);
+    result = (THPTensor *)out;
+  } else if (kwargs && PyDict_Size(kwargs) > 0) {
+    goto invalid_arguments;
+  } else {
+    result = (THPTensor *)THPTensor_(NewEmpty)();
+    if (!result) return NULL;
+  }
 
   items.reserve(seq_length);
   item_tensors.reserve(seq_length);
@@ -641,9 +654,6 @@ static PyObject * THPTensor_stateless_(cat)(THPTensor *_unused, PyObject *args)
   } else {
     dimension = 0;
   }
-
-  result = (THPTensor *)THPTensor_(NewEmpty)();
-  if (!result) return NULL;
 
   THTensor_(catArray)(LIBRARY_STATE result->cdata, item_tensors.data(),
       items.size(), dimension);

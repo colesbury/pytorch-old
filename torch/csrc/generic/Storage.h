@@ -14,6 +14,7 @@ extern PyObject *THPStorageClass;
 #include "torch/csrc/Types.h"
 
 bool THPStorage_(init)(PyObject *module);
+THStorage* THStorage_(newSharedWithSize)(ptrdiff_t size);
 
 extern PyTypeObject THPStorageType;
 template <> struct THPTypeInfo<THStorage> {
